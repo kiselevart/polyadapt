@@ -30,16 +30,17 @@ def stable_rank(tensor: torch.Tensor) -> float:
 
 
 def laguerre_order_contributions(coeff: torch.Tensor) -> list[float]:
-    """Fraction of total coeff norm carried by each Laguerre order.
+    """Energy fraction carried by each Laguerre order (sums to 1).
 
     coeff shape: [O, I, N_lag, ...]
-    Returns list of length N_lag, summing to 1.
+    Uses squared norms so fractions are proper energy shares and
+    cumulative sums are meaningful for n@90% / n@95% thresholds.
     """
-    total = coeff.norm().item()
-    if total < 1e-12:
+    total_sq = coeff.norm().item() ** 2
+    if total_sq < 1e-24:
         return [0.0] * coeff.shape[2]
     return [
-        coeff[:, :, n].norm().item() / total
+        (coeff[:, :, n].norm().item() ** 2) / total_sq
         for n in range(coeff.shape[2])
     ]
 
@@ -99,7 +100,7 @@ def analyze(args):
 
     # ── Table 2: Laguerre order breakdown ─────────────────────────────
     if any(r["order_frac"] for r in rows):
-        print("\nLaguerre order contributions (fraction of ||coeff||_F per order):")
+        print("\nLaguerre order energy fractions (||coeff[:,:,n]||² / ||coeff||²  — sums to 1):")
         max_n = max(len(r["order_frac"]) for r in rows)
         header = f"{'Adapter':<35}" + "".join(f"  L{n}" for n in range(max_n))
         print(header)
