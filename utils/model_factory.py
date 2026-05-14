@@ -1,6 +1,7 @@
 """Model factory for polyadapt."""
 
 from network.backbones.r3d_adapted import R3DAdapted
+from network.backbones.r3d_baseline import R3DBaseline
 
 
 _DS_CLASSES = {
@@ -31,6 +32,10 @@ def get_model(args, device):
             N_lag=getattr(args, "n_lag", None),
             adapter_stages=tuple(getattr(args, "adapter_stages", [1, 2, 3, 4])),
         )
+    elif args.model == "r3d_frozen":
+        net = R3DBaseline(num_classes=num_classes, freeze_backbone=True)
+    elif args.model == "r3d_finetune":
+        net = R3DBaseline(num_classes=num_classes, freeze_backbone=False)
     else:
         raise ValueError(f"Unknown model: {args.model!r}")
 
