@@ -149,7 +149,7 @@ class LaguerreConv3d(nn.Module):
 
     def __init__(self, in_ch: int, out_ch: int, kernel_size,
                  N_lag: int | None = None, alpha: float = 1.0,
-                 padding=0, bias: bool = True):
+                 stride: int | tuple = 1, padding: int | tuple = 0, bias: bool = True):
         super().__init__()
         if isinstance(kernel_size, int):
             kernel_size = (kernel_size,) * 3
@@ -166,6 +166,7 @@ class LaguerreConv3d(nn.Module):
 
         self.coeff      = nn.Parameter(torch.empty(out_ch, in_ch, N_lag, H, W))
         self.bias_param = nn.Parameter(torch.zeros(out_ch)) if bias else None
+        self.stride     = stride if isinstance(stride, tuple) else (stride,) * 3
         self._init_weights()
 
     def _init_weights(self):
@@ -177,7 +178,8 @@ class LaguerreConv3d(nn.Module):
         return torch.einsum("oinhw,nt->oithw", self.coeff, self.basis)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.conv3d(x, self._get_kernel(), self.bias_param, padding=self.padding)
+        return F.conv3d(x, self._get_kernel(), self.bias_param,
+                        stride=self.stride, padding=self.padding)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +207,8 @@ class LaguerreConv3d_Full(nn.Module):
                  N_lag_T: int | None = None, N_lag_H: int | None = None,
                  N_lag_W: int | None = None,
                  alpha_T: float = 1.0, alpha_H: float = 1.0, alpha_W: float = 1.0,
-                 center_spatial: bool = True, padding=0, bias: bool = True):
+                 center_spatial: bool = True, stride: int | tuple = 1,
+                 padding: int | tuple = 0, bias: bool = True):
         super().__init__()
         if isinstance(kernel_size, int):
             kernel_size = (kernel_size,) * 3
@@ -225,6 +228,7 @@ class LaguerreConv3d_Full(nn.Module):
 
         self.coeff      = nn.Parameter(torch.empty(out_ch, in_ch, N_T, N_H, N_W))
         self.bias_param = nn.Parameter(torch.zeros(out_ch)) if bias else None
+        self.stride     = stride if isinstance(stride, tuple) else (stride,) * 3
         self._init_weights()
 
     def _init_weights(self):
@@ -238,4 +242,5 @@ class LaguerreConv3d_Full(nn.Module):
         return k
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.conv3d(x, self._get_kernel(), self.bias_param, padding=self.padding)
+        return F.conv3d(x, self._get_kernel(), self.bias_param,
+                        stride=self.stride, padding=self.padding)
