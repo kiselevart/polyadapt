@@ -67,6 +67,8 @@ def parse_args():
     p.add_argument("--adapter_stages", type=int, nargs="+", default=[1, 2, 3, 4])
     p.add_argument("--n_lag",          type=int,   default=None,
                    help="Laguerre orders for adapter conv (None = full, i.e. T)")
+    p.add_argument("--adapter_mode", default="poly", choices=["poly", "linear"],
+                   help="'poly' = Volterra quadratic (default). 'linear' = standard LoRA.")
     p.add_argument("--adapter_bottleneck_rank", type=int, default=None,
                    help="Bottleneck rank r: compress in_ch→r before expanding to 2*Q*out_ch. "
                         "None = no bottleneck (original). Try 64 for ~10x param reduction.")

@@ -22,6 +22,7 @@ class R3DAdapted(nn.Module):
         N_lag: int | None = None,
         adapter_stages: tuple = (1, 2, 3, 4),
         bottleneck_rank: int | None = None,
+        adapter_mode: str = "poly",
     ):
         super().__init__()
 
@@ -34,7 +35,7 @@ class R3DAdapted(nn.Module):
         layers = [bb.layer1, bb.layer2, bb.layer3, bb.layer4]
         for i, layer in enumerate(layers):
             if (i + 1) in adapter_stages:
-                layers[i] = inject_adapters(layer, Q, conv_type, N_lag, bottleneck_rank)
+                layers[i] = inject_adapters(layer, Q, conv_type, N_lag, bottleneck_rank, adapter_mode)
 
         self.layer1, self.layer2, self.layer3, self.layer4 = layers
         self.avgpool = bb.avgpool
