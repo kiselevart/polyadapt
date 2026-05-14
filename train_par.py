@@ -75,6 +75,14 @@ def parse_args():
     p.add_argument("--unfreeze_after", type=int,   default=None,
                    help="Epoch to unfreeze backbone for full fine-tune (default: never)")
 
+    # --- eval ---
+    p.add_argument("--num_clips",   type=int, default=1,
+                   help="Number of temporal clips for multi-clip eval (dataset must support it)")
+    p.add_argument("--num_crops",   type=int, default=1,
+                   help="Number of spatial crops for multi-crop eval (1=center, 3=left/center/right)")
+    p.add_argument("--avg_splits",  action="store_true",
+                   help="Train on splits 1,2,3 sequentially and report mean test accuracy")
+
     # --- misc ---
     p.add_argument("--device",     default="auto", choices=["auto", "cuda", "mps", "cpu"])
     p.add_argument("--no_amp",     action="store_true")
@@ -269,6 +277,7 @@ class Trainer:
         if self.is_main:
             print(f"==> Params: {n_total:,} total | {n_trainable:,} trainable "
                   f"({100 * n_trainable / n_total:.1f}%)")
+            self._report_eval_config()
         self.wandb.config.update({"total_params": n_total, "world_size": self.world_size})
 
         if args.resume and os.path.isfile(args.resume):
@@ -305,6 +314,33 @@ class Trainer:
                 idx += 1
         return stats
 
+    def _flatten_views(self, inputs):
+        """Handle [B, V, C, T, H, W] multi-view inputs → [B*V, C, T, H, W], return (flat, n_views)."""
+        if inputs.ndim == 6:
+            B, V = inputs.shape[:2]
+            return inputs.reshape(B * V, *inputs.shape[2:]), V
+        return inputs, 1
+
+    def _compute_gflops(self):
+        try:
+            from fvcore.nn import FlopCountAnalysis
+            dummy = torch.zeros(1, 3, self.args.clip_len, 112, 112, device=self.device)
+            with torch.no_grad():
+                flops = FlopCountAnalysis(self.raw_model, dummy)
+                flops.unsupported_ops_warnings(False)
+            return flops.total() / 1e9
+        except Exception:
+            return None
+
+    def _report_eval_config(self):
+        num_clips = getattr(self.args, "num_clips", 1)
+        num_crops = getattr(self.args, "num_crops", 1)
+        gflops = self._compute_gflops()
+        msg = f"==> Eval: {num_clips} clip(s) × {num_crops} crop(s)"
+        if gflops is not None:
+            msg += f"  |  {gflops:.1f} GFLOPs/view"
+        print(msg)
+
     def _maybe_unfreeze(self, epoch):
         ua = getattr(self.args, "unfreeze_after", None)
         if ua is not None and epoch == ua:
@@ -328,7 +364,8 @@ class Trainer:
         if is_train and hasattr(loader.sampler, "set_epoch"):
             loader.sampler.set_epoch(epoch)
 
-        stats = {"loss": 0.0, "correct": 0, "total": 0, "batches": 0,
+        track_top5 = (getattr(self.args, "num_classes", 0) or 0) >= 5
+        stats = {"loss": 0.0, "correct": 0, "correct5": 0, "total": 0, "batches": 0,
                  "grad_norm": 0.0, "grad_batches": 0, "nan_grad": 0}
         self.finite_dbg_count = 0
         if is_train:
@@ -344,6 +381,11 @@ class Trainer:
             if not self._check_finite(inputs, "input", epoch, bi, mode):
                 continue
 
+            # Multi-view: flatten [B, V, C, T, H, W] → [B*V, C, T, H, W] for val/test
+            n_views = 1
+            if not is_train:
+                inputs, n_views = self._flatten_views(inputs)
+
             if is_train:
                 self.optimizer.zero_grad()
 
@@ -353,7 +395,11 @@ class Trainer:
 
             with ctx_amp, ctx_grad:
                 outputs = self.model(inputs)
-                loss    = self.criterion(outputs, targets)
+                # Average logits across views before loss
+                if n_views > 1:
+                    B = outputs.shape[0] // n_views
+                    outputs = outputs.view(B, n_views, -1).mean(dim=1)
+                loss = self.criterion(outputs, targets)
 
             if not self._check_finite(outputs, "output", epoch, bi, mode) or \
                not self._check_finite(loss,    "loss",   epoch, bi, mode):
@@ -393,31 +439,42 @@ class Trainer:
             stats["batches"] += 1
             stats["total"]   += targets.size(0)
             stats["correct"] += outputs.max(1)[1].eq(targets).sum().item()
+            if track_top5:
+                k = min(5, outputs.shape[1])
+                top5_pred = outputs.topk(k, dim=1).indices
+                stats["correct5"] += top5_pred.eq(targets.unsqueeze(1)).any(dim=1).sum().item()
 
             if self.is_main:
                 pf = {
                     "L": f"{stats['loss']/stats['batches']:.3f}",
                     "A": f"{100.*stats['correct']/stats['total']:.1f}%",
                 }
+                if track_top5:
+                    pf["A5"] = f"{100.*stats['correct5']/stats['total']:.1f}%"
                 if is_train:
                     pf["gn"] = f"{stats['grad_norm']/max(1, stats['grad_batches']):.2f}"
                 pbar.set_postfix(pf)
 
         if self.ddp:
             agg = torch.tensor(
-                [stats["loss"], float(stats["correct"]),
+                [stats["loss"], float(stats["correct"]), float(stats["correct5"]),
                  float(stats["total"]), float(stats["batches"])],
                 device=self.device, dtype=torch.float64,
             )
             dist.all_reduce(agg, op=dist.ReduceOp.SUM)
-            stats["loss"], stats["correct"] = agg[0].item(), int(agg[1].item())
-            stats["total"], stats["batches"] = int(agg[2].item()), int(agg[3].item())
+            stats["loss"]     = agg[0].item()
+            stats["correct"]  = int(agg[1].item())
+            stats["correct5"] = int(agg[2].item())
+            stats["total"]    = int(agg[3].item())
+            stats["batches"]  = int(agg[4].item())
 
         n = stats["batches"]
         res = {
             "loss": stats["loss"] / n if n else 0.0,
             "acc":  100. * stats["correct"] / stats["total"] if stats["total"] else 0.0,
         }
+        if track_top5:
+            res["acc5"] = 100. * stats["correct5"] / stats["total"] if stats["total"] else 0.0
         if is_train:
             res["grad_norm"] = stats["grad_norm"] / max(1, stats["grad_batches"])
             res["nan_grad"]  = stats["nan_grad"]
@@ -443,7 +500,8 @@ class Trainer:
                 print("==> Test only …")
             ts = self._run_epoch(0, "test")
             if self.is_main:
-                print(f"Test | Loss: {ts['loss']:.3f} | Acc: {ts['acc']:.2f}%")
+                acc5_str = f" | Acc5: {ts['acc5']:.2f}%" if "acc5" in ts else ""
+                print(f"Test | Loss: {ts['loss']:.3f} | Acc: {ts['acc']:.2f}%{acc5_str}")
             return ts["acc"]
 
         t0 = time.time()
@@ -454,10 +512,11 @@ class Trainer:
             self.scheduler.step()
 
             if self.is_main:
+                v_acc5 = f"/{vl['acc5']:.1f}%" if "acc5" in vl else ""
                 print(
                     f"Ep {epoch+1:3d} | "
                     f"T {tr['loss']:.3f}/{tr['acc']:.1f}% | "
-                    f"V {vl['loss']:.3f}/{vl['acc']:.1f}% | "
+                    f"V {vl['loss']:.3f}/{vl['acc']:.1f}%{v_acc5} | "
                     f"GN {tr['grad_norm']:.3f} | "
                     f"NaN_g {tr['nan_grad']} Skip {self.skipped_stats['total']}"
                 )
@@ -493,11 +552,23 @@ class Trainer:
 
         ts = self._run_epoch(self.args.epochs - 1, "test")
         if self.is_main:
-            print(f"Test | Loss: {ts['loss']:.3f} | Acc: {ts['acc']:.2f}%")
+            acc5_str = f" | Acc5: {ts['acc5']:.2f}%" if "acc5" in ts else ""
+            print(f"Test | Loss: {ts['loss']:.3f} | Acc: {ts['acc']:.2f}%{acc5_str}")
             self.wandb.summary.update({f"test/{k}": v for k, v in ts.items()})
             self.wandb.finish()
         return ts["acc"]
 
 
 if __name__ == "__main__":
-    Trainer(parse_args()).run()
+    args = parse_args()
+    if getattr(args, "avg_splits", False):
+        accs = []
+        for s in [1, 2, 3]:
+            args.split = s
+            args.ucf_split = s
+            accs.append(Trainer(args).run())
+        if accs:
+            print(f"==> Avg splits: {sum(accs)/len(accs):.2f}%  "
+                  f"(splits: {', '.join(f'{a:.2f}%' for a in accs)})")
+    else:
+        Trainer(args).run()
