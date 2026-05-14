@@ -137,10 +137,11 @@ class Trainer:
         self.ddp        = local_rank >= 0
         self.local_rank = max(local_rank, 0)
         if self.ddp:
-            dist.init_process_group(backend="nccl")
+            if not dist.is_initialized():
+                dist.init_process_group(backend="nccl")
+                atexit.register(dist.destroy_process_group)
             self.rank       = dist.get_rank()
             self.world_size = dist.get_world_size()
-            atexit.register(dist.destroy_process_group)
         else:
             self.rank, self.world_size = 0, 1
         self.is_main = (self.rank == 0)
