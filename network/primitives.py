@@ -24,13 +24,8 @@ import torch.nn.functional as F
 # Volterra interaction primitives
 # ---------------------------------------------------------------------------
 
-# Clamp values: chosen so a single un-summed product term is ≤ 50 in magnitude.
-_QUAD_FC = 7.071   # √50
-_CUB_FC  = 3.684   # ∛50
-
-
 def volterra_quadratic(x_conv: torch.Tensor, Q: int, nch_out: int) -> torch.Tensor:
-    """CP-factorised 2nd-order Volterra interaction.
+    """Channel-parallel CP-factorised 2nd-order Volterra interaction.
 
     h2(i,j) ≈ Σ_q a_q(i)·b_q(j)
 
@@ -42,11 +37,30 @@ def volterra_quadratic(x_conv: torch.Tensor, Q: int, nch_out: int) -> torch.Tens
         [B, C, T, H, W]
     """
     mid   = Q * nch_out
-    left  = x_conv[:, :mid].clamp(-_QUAD_FC, _QUAD_FC)
-    right = x_conv[:, mid:].clamp(-_QUAD_FC, _QUAD_FC)
+    left  = x_conv[:, :mid]
+    right = x_conv[:, mid:]
     product = left * right  # [B, Q*C, T, H, W]
     shape = product.shape
-    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1).clamp(-50.0, 50.0)
+    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1)
+
+
+def volterra_quadratic_cross(x_conv: torch.Tensor, Q: int) -> torch.Tensor:
+    """Cross-channel CP-factorised 2nd-order Volterra interaction.
+
+    Projects x to a shared Q-dimensional interaction space, then multiplies.
+    Output is [B, Q, T, H, W] — caller projects Q → out_ch via a pointwise conv.
+    This allows output channel c to depend on the polynomial interaction of ALL
+    input channels (cross-channel), unlike the channel-parallel form above.
+
+    Args:
+        x_conv: [B, 2*Q, T, H, W] — output of a conv mapping in_ch → 2*Q.
+        Q:      Interaction rank.
+    Returns:
+        [B, Q, T, H, W]
+    """
+    left  = x_conv[:, :Q]   # [B, Q, T, H, W]
+    right = x_conv[:, Q:]   # [B, Q, T, H, W]
+    return left * right
 
 
 def volterra_cubic_symmetric(x_conv: torch.Tensor, Q: int, nch_out: int) -> torch.Tensor:
@@ -55,11 +69,11 @@ def volterra_cubic_symmetric(x_conv: torch.Tensor, Q: int, nch_out: int) -> torc
     h3(i,j,k) ≈ Σ_q a_q(i)·a_q(j)·b_q(k)
     """
     mid = Q * nch_out
-    a = x_conv[:, :mid].clamp(-_CUB_FC, _CUB_FC)
-    b = x_conv[:, mid:].clamp(-_CUB_FC, _CUB_FC)
+    a = x_conv[:, :mid]
+    b = x_conv[:, mid:]
     product = (a * a) * b
     shape = product.shape
-    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1).clamp(-50.0, 50.0)
+    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1)
 
 
 def volterra_cubic_general(x_conv: torch.Tensor, Q: int, nch_out: int) -> torch.Tensor:
@@ -67,10 +81,10 @@ def volterra_cubic_general(x_conv: torch.Tensor, Q: int, nch_out: int) -> torch.
 
     h3(i,j,k) ≈ Σ_q a_q(i)·b_q(j)·c_q(k)
     """
-    a, b, c = [t.clamp(-_CUB_FC, _CUB_FC) for t in torch.chunk(x_conv, 3, dim=1)]
+    a, b, c = torch.chunk(x_conv, 3, dim=1)
     product = a * b * c
     shape = product.shape
-    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1).clamp(-50.0, 50.0)
+    return product.view(shape[0], Q, nch_out, *shape[2:]).sum(dim=1)
 
 
 # ---------------------------------------------------------------------------

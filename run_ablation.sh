@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sequential 2x2 ablation: (conv3d | laguerre) x (linear | poly)
+# 4-way mode ablation: linear | relu | cross_poly | poly
 # Usage: bash run_ablation.sh [gpus] [dataset] [avg_splits]
 #   gpus:       comma-separated GPU ids (default: 4,5,6,7)
 #   dataset:    ucf101 | hmdb51 (default: ucf101)
@@ -39,9 +39,9 @@ run() {
     echo ""
 }
 
-run lora            --adapter_conv conv3d   --adapter_mode linear
-run lora_laguerre   --adapter_conv laguerre --adapter_mode linear
-run poly_conv3d     --adapter_conv conv3d   --adapter_mode poly
-run poly_laguerre   --adapter_conv laguerre --adapter_mode poly
+run lora        --adapter_mode linear
+run relu        --adapter_mode relu
+run cross_poly  --adapter_mode cross_poly
+run poly        --adapter_mode poly
 
 echo "==> All runs complete."

@@ -28,11 +28,9 @@ def get_model(args, device):
         net = R3DAdapted(
             num_classes=num_classes,
             Q=getattr(args, "adapter_rank", 4),
-            conv_type=getattr(args, "adapter_conv", "laguerre"),
-            N_lag=getattr(args, "n_lag", None),
             adapter_stages=tuple(getattr(args, "adapter_stages", [1, 2, 3, 4])),
             bottleneck_rank=getattr(args, "adapter_bottleneck_rank", None),
-            adapter_mode=getattr(args, "adapter_mode", "poly"),
+            adapter_mode=getattr(args, "adapter_mode", "cross_poly"),
         )
     elif args.model == "r3d_frozen":
         net = R3DBaseline(num_classes=num_classes, freeze_backbone=True)

@@ -8,7 +8,7 @@ Multi-GPU (4 GPUs):
     NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=4,5,6,7 \\
         torchrun --nproc_per_node=4 train_par.py \\
         --dataset ucf101 --model r3d_adapted --run_name ucf101_polyadapt_q4 \\
-        --batch_size 8 --lr 4e-4 --adapter_rank 4 --adapter_conv laguerre \\
+        --batch_size 8 --lr 4e-4 --adapter_rank 4 \\
         --warmup_epochs 5 --no_wandb
 
 Effective batch size = batch_size × world_size.  Scale --lr linearly.
@@ -54,7 +54,6 @@ def parse_args():
     p.add_argument("--label_smoothing", type=float, default=0.1)
     p.add_argument("--warmup_epochs", type=int,   default=5)
     p.add_argument("--fc_lr_mult",    type=float, default=10.0)
-    p.add_argument("--laguerre_lr_mult", type=float, default=3.0)
 
     # --- data ---
     p.add_argument("--clip_len",     type=int,   default=16)
@@ -63,12 +62,11 @@ def parse_args():
 
     # --- adapter (Proposal 1) ---
     p.add_argument("--adapter_rank",   type=int,   default=4)
-    p.add_argument("--adapter_conv",   default="laguerre", choices=["laguerre", "full", "conv3d"])
     p.add_argument("--adapter_stages", type=int, nargs="+", default=[1, 2, 3, 4])
-    p.add_argument("--n_lag",          type=int,   default=None,
-                   help="Laguerre orders for adapter conv (None = full, i.e. T)")
-    p.add_argument("--adapter_mode", default="poly", choices=["poly", "linear"],
-                   help="'poly' = Volterra quadratic (default). 'linear' = standard LoRA.")
+    p.add_argument("--adapter_mode", default="cross_poly",
+                   choices=["poly", "linear", "cross_poly", "relu"],
+                   help="'cross_poly' = cross-channel Volterra (default). "
+                        "'relu' = ReLU ablation. 'linear' = standard LoRA.")
     p.add_argument("--adapter_bottleneck_rank", type=int, default=None,
                    help="Bottleneck rank r: compress in_ch→r before expanding to 2*Q*out_ch. "
                         "None = no bottleneck (original). Try 64 for ~10x param reduction.")
@@ -199,32 +197,21 @@ class Trainer:
 
     def _setup_optimizer(self, args):
         model = self.raw_model
-        laguerre_lr = args.lr * args.laguerre_lr_mult
-        fc_lr       = args.lr * args.fc_lr_mult
+        fc_lr = args.lr * args.fc_lr_mult
 
-        # Collect trainable params into three groups:
-        #   1. coeff (Laguerre Tucker params) — higher LR to offset Tucker grad attenuation
-        #   2. head  (fc layer)              — higher LR, fresh random init
-        #   3. rest  (adapter gate, BN, etc.)
-        coeff_p, head_p, other_p = [], [], []
+        head_p, other_p = [], []
         for name, p in model.named_parameters():
             if not p.requires_grad:
                 continue
             if name.startswith("fc."):
                 head_p.append(p)
-            elif name.endswith(".coeff"):
-                coeff_p.append(p)
             else:
                 other_p.append(p)
 
         param_groups = [
-            {"params": other_p, "lr": args.lr,    "weight_decay": args.weight_decay},
-            {"params": head_p,  "lr": fc_lr,       "weight_decay": args.weight_decay},
+            {"params": other_p, "lr": args.lr, "weight_decay": args.weight_decay},
+            {"params": head_p,  "lr": fc_lr,   "weight_decay": args.weight_decay},
         ]
-        if coeff_p:
-            param_groups.append(
-                {"params": coeff_p, "lr": laguerre_lr, "weight_decay": args.weight_decay}
-            )
 
         self.optimizer = optim.AdamW(param_groups, lr=args.lr,
                                      weight_decay=args.weight_decay)

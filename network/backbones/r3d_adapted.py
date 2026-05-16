@@ -18,11 +18,9 @@ class R3DAdapted(nn.Module):
         self,
         num_classes: int,
         Q: int = 4,
-        conv_type: str = "laguerre",
-        N_lag: int | None = None,
         adapter_stages: tuple = (1, 2, 3, 4),
         bottleneck_rank: int | None = None,
-        adapter_mode: str = "poly",
+        adapter_mode: str = "cross_poly",
     ):
         super().__init__()
 
@@ -35,7 +33,7 @@ class R3DAdapted(nn.Module):
         layers = [bb.layer1, bb.layer2, bb.layer3, bb.layer4]
         for i, layer in enumerate(layers):
             if (i + 1) in adapter_stages:
-                layers[i] = inject_adapters(layer, Q, conv_type, N_lag, bottleneck_rank, adapter_mode)
+                layers[i] = inject_adapters(layer, Q, bottleneck_rank, adapter_mode)
 
         self.layer1, self.layer2, self.layer3, self.layer4 = layers
         self.avgpool = bb.avgpool
@@ -54,11 +52,9 @@ class R3DAdapted(nn.Module):
         return self.fc(x.flatten(1))
 
     def get_1x_lr_params(self):
-        """Adapter parameters (excludes frozen backbone and fc head)."""
         for name, p in self.named_parameters():
             if p.requires_grad and not name.startswith("fc."):
                 yield p
 
     def get_10x_lr_params(self):
-        """Classification head parameters."""
         return iter(self.fc.parameters())

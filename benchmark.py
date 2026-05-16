@@ -12,10 +12,6 @@ Example — stage sweep:
     python benchmark.py --dataset ucf101 --sweep stages \\
         --batch_size 8 --epochs 30 --no_wandb
 
-Example — n_lag sweep:
-    python benchmark.py --dataset ucf101 --sweep n_lag \\
-        --batch_size 8 --epochs 30 --no_wandb
-
 Pass --dry_run to print the configs without training.
 """
 
@@ -29,19 +25,17 @@ from dataclasses import dataclass, field, asdict
 
 @dataclass
 class Config:
-    name:          str
-    model:         str   = "r3d_adapted"
-    adapter_rank:  int   = 4
-    adapter_conv:  str   = "laguerre"
+    name:           str
+    model:          str  = "r3d_adapted"
+    adapter_rank:   int  = 4
     adapter_stages: list = field(default_factory=lambda: [1, 2, 3, 4])
-    n_lag:         int | None = None
+    adapter_mode:   str  = "cross_poly"
 
 
 # ── Sweep definitions ────────────────────────────────────────────────
 
 SWEEPS: dict[str, list[Config]] = {
 
-    # Baselines (always included)
     "baselines": [
         Config("r3d_frozen",   model="r3d_frozen"),
         Config("r3d_finetune", model="r3d_finetune"),
@@ -61,16 +55,10 @@ SWEEPS: dict[str, list[Config]] = {
         Config("adapted_s1234", adapter_stages=[1, 2, 3, 4]),
     ],
 
-    # How many Laguerre temporal orders are needed?
-    "n_lag": [
-        Config(f"adapted_nlag{n}", n_lag=n)
-        for n in [1, 2, 3]   # 3 = full (no compression for T=3 kernel)
-    ],
-
-    # Conv type comparison at fixed rank
-    "conv_type": [
-        Config(f"adapted_{ct}", adapter_conv=ct)
-        for ct in ["laguerre", "conv3d"]
+    # Interaction mode comparison
+    "mode": [
+        Config(f"adapted_{m}", adapter_mode=m)
+        for m in ["linear", "relu", "cross_poly", "poly"]
     ],
 }
 
@@ -92,10 +80,8 @@ def config_to_argv(cfg: Config, shared: argparse.Namespace) -> list[str]:
 
     if cfg.model == "r3d_adapted":
         argv += ["--adapter_rank",  str(cfg.adapter_rank)]
-        argv += ["--adapter_conv",  cfg.adapter_conv]
+        argv += ["--adapter_mode",  cfg.adapter_mode]
         argv += ["--adapter_stages"] + [str(s) for s in cfg.adapter_stages]
-        if cfg.n_lag is not None:
-            argv += ["--n_lag", str(cfg.n_lag)]
 
     return argv
 
@@ -113,16 +99,16 @@ def count_trainable(cfg: Config, dataset: str) -> int:
     a.dataset        = dataset
     a.num_classes    = {"ucf101": 101, "hmdb51": 51, "ssv2": 174}.get(dataset, 101)
     a.adapter_rank   = cfg.adapter_rank
-    a.adapter_conv   = cfg.adapter_conv
     a.adapter_stages = cfg.adapter_stages
-    a.n_lag          = cfg.n_lag
+    a.adapter_mode   = cfg.adapter_mode
+    a.adapter_bottleneck_rank = None
 
     m = get_model(a, torch.device("cpu"))
     return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
 
 def run_sweep(args):
-    configs = list(SWEEPS["baselines"])  # always include baselines
+    configs = list(SWEEPS["baselines"])
     for sweep_name in args.sweep:
         for c in SWEEPS[sweep_name]:
             if c not in configs:
@@ -145,9 +131,7 @@ def run_sweep(args):
 
         ret = subprocess.run(argv, capture_output=False)
 
-        # Parse best val acc from the run directory (last printed line)
         best_acc = None
-        run_dir_prefix = os.path.join("runs", f"{args.dataset}_{cfg.name}")
         for d in sorted(os.listdir("runs"), reverse=True):
             if d.startswith(f"{args.dataset}_{cfg.name}"):
                 ckpt = os.path.join("runs", d, "checkpoints", "best_model.pth")
@@ -193,8 +177,7 @@ def parse_args():
     p.add_argument("--warmup_epochs", type=int,   default=5)
     p.add_argument("--num_workers",   type=int,   default=8)
     p.add_argument("--no_wandb",      action="store_true")
-    p.add_argument("--dry_run",       action="store_true",
-                   help="Print configs without training")
+    p.add_argument("--dry_run",       action="store_true")
     return p.parse_args()
 
 
