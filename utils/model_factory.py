@@ -2,6 +2,7 @@
 
 from network.backbones.r3d_adapted import R3DAdapted
 from network.backbones.r3d_baseline import R3DBaseline
+from network.backbones.swin3d_adapted import Swin3DAdapted, Swin3DBaseline
 
 
 _DS_CLASSES = {
@@ -36,6 +37,22 @@ def get_model(args, device):
         net = R3DBaseline(num_classes=num_classes, freeze_backbone=True)
     elif args.model == "r3d_finetune":
         net = R3DBaseline(num_classes=num_classes, freeze_backbone=False)
+    elif args.model in ("swin3d_t_adapted", "swin3d_s_adapted", "swin3d_b_adapted"):
+        variant = args.model.replace("_adapted", "")
+        net = Swin3DAdapted(
+            num_classes=num_classes,
+            Q=getattr(args, "adapter_rank", 4),
+            adapter_stages=tuple(getattr(args, "adapter_stages", [1, 2, 3, 4])),
+            bottleneck_rank=getattr(args, "adapter_bottleneck_rank", None),
+            adapter_mode=getattr(args, "adapter_mode", "cross_poly"),
+            variant=variant,
+        )
+    elif args.model in ("swin3d_t_frozen", "swin3d_s_frozen", "swin3d_b_frozen"):
+        variant = args.model.replace("_frozen", "")
+        net = Swin3DBaseline(num_classes=num_classes, freeze_backbone=True, variant=variant)
+    elif args.model in ("swin3d_t_finetune", "swin3d_s_finetune", "swin3d_b_finetune"):
+        variant = args.model.replace("_finetune", "")
+        net = Swin3DBaseline(num_classes=num_classes, freeze_backbone=False, variant=variant)
     else:
         raise ValueError(f"Unknown model: {args.model!r}")
 
